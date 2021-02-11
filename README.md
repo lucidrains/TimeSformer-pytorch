@@ -14,7 +14,7 @@ $ pip install timesformer-pytorch
 
 ```python
 import torch
-from timesformer_pytorch.timesformer_pytorch import TimeSformer
+from timesformer_pytorch import TimeSformer
 
 model = TimeSformer(
     dim = 512,
