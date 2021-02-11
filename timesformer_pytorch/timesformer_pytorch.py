@@ -4,23 +4,15 @@ from einops import rearrange, repeat
 
 # classes
 
-class Residual(nn.Module):
-    def __init__(self, fn):
-        super().__init__()
-        self.fn = fn
-
-    def forward(self, x, **kwargs):
-        return self.fn(x, **kwargs) + x
-
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
         super().__init__()
         self.fn = fn
         self.norm = nn.LayerNorm(dim)
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, *args, **kwargs):
         x = self.norm(x)
-        return self.fn(x, **kwargs)
+        return self.fn(x, *args, **kwargs)
 
 # feedforward
 
@@ -135,9 +127,9 @@ class TimeSformer(nn.Module):
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
-                Attention(dim, dim_head = dim_head, heads = heads, dropout = attn_dropout),
-                Attention(dim, dim_head = dim_head, heads = heads, dropout = attn_dropout),
-                FeedForward(dim, dropout = ff_dropout)
+                PreNorm(dim, Attention(dim, dim_head = dim_head, heads = heads, dropout = attn_dropout)),
+                PreNorm(dim, Attention(dim, dim_head = dim_head, heads = heads, dropout = attn_dropout)),
+                PreNorm(dim, FeedForward(dim, dropout = ff_dropout))
             ]))
 
         self.to_out = nn.Sequential(
@@ -159,9 +151,9 @@ class TimeSformer(nn.Module):
         x += self.pos_emb(torch.arange(x.shape[1], device = device))
 
         for (time_attn, spatial_attn, ff) in self.layers:
-            x = time_attn(x, 'b (f n) d', '(b n) f d', n = n)
-            x = spatial_attn(x, 'b (f n) d', '(b f) n d', f = f)
-            x = ff(x)
+            x = time_attn(x, 'b (f n) d', '(b n) f d', n = n) + x
+            x = spatial_attn(x, 'b (f n) d', '(b f) n d', f = f) + x
+            x = ff(x) + x
 
         cls_token = tokens[:, 0]
         return self.to_out(cls_token)
