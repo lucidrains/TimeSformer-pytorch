@@ -3,7 +3,6 @@ from setuptools import setup, find_packages
 setup(
   name = 'timesformer-pytorch',
   packages = find_packages(),
-  include_package_data = True,
   version = '0.0.1',
   license='MIT',
   description = 'TimeSformer - Pytorch',
