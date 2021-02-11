@@ -1,3 +1,5 @@
+<img src="./diagram.png" width="600px"></img>
+
 ## TimeSformer - Pytorch (wip)
 
 Implementation of <a href="https://arxiv.org/abs/2102.05095">TimeSformer</a>, a pure and simple attention-based solution for reaching SOTA on video classification. This repository will only house the best performing variant, 'Divided Space-Time Attention', which is nothing more than attention along the time axis before the spatial.
