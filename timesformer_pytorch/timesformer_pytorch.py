@@ -155,5 +155,5 @@ class TimeSformer(nn.Module):
             x = spatial_attn(x, 'b (f n) d', '(b f) n d', f = f) + x
             x = ff(x) + x
 
-        cls_token = tokens[:, 0]
+        cls_token = x[:, 0]
         return self.to_out(cls_token)
