@@ -2,7 +2,9 @@
 
 ## TimeSformer - Pytorch
 
-Implementation of <a href="https://arxiv.org/abs/2102.05095">TimeSformer</a>, a pure and simple attention-based solution for reaching SOTA on video classification. This repository will only house the best performing variant, 'Divided Space-Time Attention', which is nothing more than attention along the time axis before the spatial.
+Implementation of <a href="https://arxiv.org/abs/2102.05095">TimeSformer</a>, from Facebook AI. A pure and simple attention-based solution for reaching SOTA on video classification. This repository will only house the best performing variant, 'Divided Space-Time Attention', which is nothing more than attention along the time axis before the spatial.
+
+<a href="https://ai.facebook.com/blog/timesformer-a-new-architecture-for-video-understanding/">Press release</a>
 
 ## Install
 
