@@ -5,21 +5,22 @@ from einops import rearrange, repeat
 
 # classes
 
-class ScaleNorm(nn.Module):
-    def __init__(self, dim, eps = 1e-5):
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps = 1e-8):
         super().__init__()
+        self.scale = dim ** -0.5
         self.eps = eps
         self.g = nn.Parameter(torch.ones(1))
 
     def forward(self, x):
-        n = torch.norm(x, dim = -1, keepdim = True).clamp(min = self.eps)
-        return x / n * self.g
+        norm = torch.norm(x, dim = -1, keepdim = True) * self.scale
+        return x / norm.clamp(min = self.eps) * self.g
 
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
         super().__init__()
         self.fn = fn
-        self.norm = ScaleNorm(dim)
+        self.norm = RMSNorm(dim)
 
     def forward(self, x, *args, **kwargs):
         x = self.norm(x)
@@ -149,7 +150,7 @@ class TimeSformer(nn.Module):
             ]))
 
         self.to_out = nn.Sequential(
-            ScaleNorm(dim),
+            RMSNorm(dim),
             nn.Linear(dim, num_classes)
         )
 
