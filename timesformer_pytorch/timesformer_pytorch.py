@@ -3,6 +3,11 @@ from torch import nn, einsum
 import torch.nn.functional as F
 from einops import rearrange, repeat
 
+# helpers
+
+def exists(val):
+    return val is not None
+
 # classes
 
 class PreNorm(nn.Module):
@@ -37,8 +42,13 @@ class FeedForward(nn.Module):
 
 # attention
 
-def attn(q, k, v):
+def attn(q, k, v, mask = None):
     sim = einsum('b i d, b j d -> b i j', q, k)
+
+    if exists(mask):
+        max_neg_value = -torch.finfo(sim.dtype).max
+        sim.masked_fill_(~mask, max_neg_value)
+
     attn = sim.softmax(dim = -1)
     out = einsum('b i j, b j d -> b i d', attn, v)
     return out
@@ -62,7 +72,7 @@ class Attention(nn.Module):
             nn.Dropout(dropout)
         )
 
-    def forward(self, x, einops_from, einops_to, **einops_dims):
+    def forward(self, x, einops_from, einops_to, mask = None, cls_mask = None, **einops_dims):
         h = self.heads
         q, k, v = self.to_qkv(x).chunk(3, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h = h), (q, k, v))
@@ -70,10 +80,10 @@ class Attention(nn.Module):
         q *= self.scale
 
         # splice out classification token at index 1
-        (cls_q, q_), (cls_k, k_), (cls_v, v_) = map(lambda t: (t[:, 0:1], t[:, 1:]), (q, k, v))
+        (cls_q, q_), (cls_k, k_), (cls_v, v_) = map(lambda t: (t[:, :1], t[:, 1:]), (q, k, v))
 
         # let classification token attend to key / values of all patches across time and space
-        cls_out = attn(cls_q, k, v)
+        cls_out = attn(cls_q, k, v, mask = cls_mask)
 
         # rearrange across time or space
         q_, k_, v_ = map(lambda t: rearrange(t, f'{einops_from} -> {einops_to}', **einops_dims), (q_, k_, v_))
@@ -86,7 +96,7 @@ class Attention(nn.Module):
         v_ = torch.cat((cls_v, v_), dim = 1)
 
         # attention
-        out = attn(q_, k_, v_)
+        out = attn(q_, k_, v_, mask = mask)
 
         # merge back time or space
         out = rearrange(out, f'{einops_to} -> {einops_from}', **einops_dims)
@@ -125,6 +135,7 @@ class TimeSformer(nn.Module):
         num_positions = num_frames * num_patches
         patch_dim = channels * patch_size ** 2
 
+        self.heads = heads
         self.patch_size = patch_size
         self.to_patch_embedding = nn.Linear(patch_dim, dim)
         self.pos_emb = nn.Embedding(num_positions + 1, dim)
@@ -143,7 +154,7 @@ class TimeSformer(nn.Module):
             nn.Linear(dim, num_classes)
         )
 
-    def forward(self, video):
+    def forward(self, video, mask = None):
         b, f, _, h, w, *_, device, p = *video.shape, video.device, self.patch_size
         assert h % p == 0 and w % p == 0, f'height {h} and width {w} of video must be divisible by the patch size {p}'
 
@@ -156,9 +167,17 @@ class TimeSformer(nn.Module):
         x =  torch.cat((cls_token, tokens), dim = 1)
         x += self.pos_emb(torch.arange(x.shape[1], device = device))
 
+        if exists(mask):
+            mask_with_cls = F.pad(mask, (1, 0), value = True)
+
+            frame_mask = repeat(mask_with_cls, 'b f -> (b h n) () f', n = n, h = self.heads)
+
+            cls_attn_mask = repeat(mask, 'b f -> (b h) () (f n)', n = n, h = self.heads)
+            cls_attn_mask = F.pad(cls_attn_mask, (1, 0), value = True)
+
         for (time_attn, spatial_attn, ff) in self.layers:
-            x = time_attn(x, 'b (f n) d', '(b n) f d', n = n) + x
-            x = spatial_attn(x, 'b (f n) d', '(b f) n d', f = f) + x
+            x = time_attn(x, 'b (f n) d', '(b n) f d', n = n, mask = frame_mask, cls_mask = cls_attn_mask) + x
+            x = spatial_attn(x, 'b (f n) d', '(b f) n d', f = f, cls_mask = cls_attn_mask) + x
             x = ff(x) + x
 
         cls_token = x[:, 0]

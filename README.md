@@ -32,7 +32,9 @@ model = TimeSformer(
 )
 
 video = torch.randn(2, 8, 3, 224, 224) # (batch x frames x channels x height x width)
-pred = model(video) # (2, 10)
+mask = torch.ones(2, 8).bool() # (batch x frame) - use a mask if there are variable length videos in the same batch
+
+pred = model(video, mask = mask) # (2, 10)
 ```
 
 ## Citations
