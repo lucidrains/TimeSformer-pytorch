@@ -174,6 +174,9 @@ class TimeSformer(nn.Module):
 
             cls_attn_mask = repeat(mask, 'b f -> (b h) () (f n)', n = n, h = self.heads)
             cls_attn_mask = F.pad(cls_attn_mask, (1, 0), value = True)
+        else:
+            frame_mask = None
+            cls_attn_mask = None
 
         for (time_attn, spatial_attn, ff) in self.layers:
             x = time_attn(x, 'b (f n) d', '(b n) f d', n = n, mask = frame_mask, cls_mask = cls_attn_mask) + x
