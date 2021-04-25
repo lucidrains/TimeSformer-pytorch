@@ -1,3 +1,4 @@
+from math import log, pi
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
@@ -7,6 +8,65 @@ from einops import rearrange, repeat
 
 def exists(val):
     return val is not None
+
+# rotary embeddings
+
+def rotate_every_two(x):
+    x = rearrange(x, '... (d j) -> ... d j', j = 2)
+    x1, x2 = x.unbind(dim = -1)
+    x = torch.stack((-x2, x1), dim = -1)
+    return rearrange(x, '... d j -> ... (d j)')
+
+def apply_rot_emb(q, k, rot_emb):
+    sin, cos = rot_emb
+    rot_dim = sin.shape[-1]
+    (q, q_pass), (k, k_pass) = map(lambda t: (t[..., :rot_dim], t[..., rot_dim:]), (q, k))
+    q, k = map(lambda t: t * cos + rotate_every_two(t) * sin, (q, k))
+    q, k = map(lambda t: torch.cat(t, dim = -1), ((q, q_pass), (k, k_pass)))
+    return q, k
+
+class AxialRotaryEmbedding(nn.Module):
+    def __init__(self, dim, max_freq = 10):
+        super().__init__()
+        self.dim = dim
+        scales = torch.logspace(0., log(max_freq / 2) / log(2), self.dim // 4, base = 2)
+        self.register_buffer('scales', scales)
+
+    def forward(self, h, w, device):
+        scales = self.scales[None, ...]
+        scales = scales.to(device)
+
+        h_seq = torch.linspace(-1., 1., steps = h, device = device)
+        h_seq = h_seq.unsqueeze(-1)
+
+        w_seq = torch.linspace(-1., 1., steps = h, device = device)
+        w_seq = w_seq.unsqueeze(-1)
+
+        h_seq = h_seq * scales * pi
+        w_seq = w_seq * scales * pi
+
+        x_sinu = repeat(h_seq, 'i d -> i j d', j = w)
+        y_sinu = repeat(w_seq, 'j d -> i j d', i = h)
+
+        sin = torch.cat((x_sinu.sin(), y_sinu.sin()), dim = -1)
+        cos = torch.cat((x_sinu.cos(), y_sinu.cos()), dim = -1)
+
+        sin, cos = map(lambda t: rearrange(t, 'i j d -> (i j) d'), (sin, cos))
+        sin, cos = map(lambda t: repeat(t, 'n d -> () n (d j)', j = 2), (sin, cos))
+        return sin, cos
+
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        inv_freqs = 1. / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer('inv_freqs', inv_freqs)
+
+    def forward(self, n, device):
+        seq = torch.arange(n, device = device)
+        freqs = einsum('i, j -> i j', seq, self.inv_freqs)
+        freqs = torch.cat((freqs, freqs), dim = -1)
+        freqs = rearrange(freqs, 'n d -> () n d')
+        return freqs.sin(), freqs.cos()
 
 # classes
 
@@ -72,7 +132,7 @@ class Attention(nn.Module):
             nn.Dropout(dropout)
         )
 
-    def forward(self, x, einops_from, einops_to, mask = None, cls_mask = None, **einops_dims):
+    def forward(self, x, einops_from, einops_to, mask = None, cls_mask = None, rot_emb = None, **einops_dims):
         h = self.heads
         q, k, v = self.to_qkv(x).chunk(3, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h = h), (q, k, v))
@@ -87,6 +147,10 @@ class Attention(nn.Module):
 
         # rearrange across time or space
         q_, k_, v_ = map(lambda t: rearrange(t, f'{einops_from} -> {einops_to}', **einops_dims), (q_, k_, v_))
+
+        # add rotary embeddings, if applicable
+        if exists(rot_emb):
+            q_, k_ = apply_rot_emb(q_, k_, rot_emb)
 
         # expand cls token keys and values across time or space and concat
         r = q_.shape[0] // cls_k.shape[0]
@@ -126,7 +190,8 @@ class TimeSformer(nn.Module):
         heads = 8,
         dim_head = 64,
         attn_dropout = 0.,
-        ff_dropout = 0.
+        ff_dropout = 0.,
+        rotary_emb = True
     ):
         super().__init__()
         assert image_size % patch_size == 0, 'Image dimensions must be divisible by the patch size.'
@@ -138,8 +203,15 @@ class TimeSformer(nn.Module):
         self.heads = heads
         self.patch_size = patch_size
         self.to_patch_embedding = nn.Linear(patch_dim, dim)
-        self.pos_emb = nn.Embedding(num_positions + 1, dim)
         self.cls_token = nn.Parameter(torch.randn(1, dim))
+
+        self.use_rotary_emb = rotary_emb
+        if rotary_emb:
+            self.frame_rot_emb = RotaryEmbedding(dim_head)
+            self.image_rot_emb = AxialRotaryEmbedding(dim_head)
+        else:
+            self.pos_emb = nn.Embedding(num_positions + 1, dim)
+
 
         self.layers = nn.ModuleList([])
         for _ in range(depth):
@@ -158,15 +230,35 @@ class TimeSformer(nn.Module):
         b, f, _, h, w, *_, device, p = *video.shape, video.device, self.patch_size
         assert h % p == 0 and w % p == 0, f'height {h} and width {w} of video must be divisible by the patch size {p}'
 
-        n = (h // p) * (w // p)
+        # calculate num patches in height and width dimension, and number of total patches (n)
+
+        hp, wp = (h // p), (w // p)
+        n = hp * wp
+
+        # video to patch embeddings
 
         video = rearrange(video, 'b f c (h p1) (w p2) -> b (f h w) (p1 p2 c)', p1 = p, p2 = p)
         tokens = self.to_patch_embedding(video)
 
+        # add cls token
+
         cls_token = repeat(self.cls_token, 'n d -> b n d', b = b)
         x =  torch.cat((cls_token, tokens), dim = 1)
-        x += self.pos_emb(torch.arange(x.shape[1], device = device))
 
+        # positional embedding
+
+        frame_pos_emb = None
+        image_pos_emb = None
+        if not self.use_rotary_emb:
+            x += self.pos_emb(torch.arange(x.shape[1], device = device))
+        else:
+            frame_pos_emb = self.frame_rot_emb(f, device = device)
+            image_pos_emb = self.image_rot_emb(hp, wp, device = device)
+
+        # calculate masking for uneven number of frames
+
+        frame_mask = None
+        cls_attn_mask = None
         if exists(mask):
             mask_with_cls = F.pad(mask, (1, 0), value = True)
 
@@ -174,13 +266,12 @@ class TimeSformer(nn.Module):
 
             cls_attn_mask = repeat(mask, 'b f -> (b h) () (f n)', n = n, h = self.heads)
             cls_attn_mask = F.pad(cls_attn_mask, (1, 0), value = True)
-        else:
-            frame_mask = None
-            cls_attn_mask = None
+
+        # time and space attention
 
         for (time_attn, spatial_attn, ff) in self.layers:
-            x = time_attn(x, 'b (f n) d', '(b n) f d', n = n, mask = frame_mask, cls_mask = cls_attn_mask) + x
-            x = spatial_attn(x, 'b (f n) d', '(b f) n d', f = f, cls_mask = cls_attn_mask) + x
+            x = time_attn(x, 'b (f n) d', '(b n) f d', n = n, mask = frame_mask, cls_mask = cls_attn_mask, rot_emb = frame_pos_emb) + x
+            x = spatial_attn(x, 'b (f n) d', '(b f) n d', f = f, cls_mask = cls_attn_mask, rot_emb = image_pos_emb) + x
             x = ff(x) + x
 
         cls_token = x[:, 0]
