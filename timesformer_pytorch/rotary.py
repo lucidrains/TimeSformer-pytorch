@@ -32,7 +32,7 @@ class AxialRotaryEmbedding(nn.Module):
         h_seq = torch.linspace(-1., 1., steps = h, device = device)
         h_seq = h_seq.unsqueeze(-1)
 
-        w_seq = torch.linspace(-1., 1., steps = h, device = device)
+        w_seq = torch.linspace(-1., 1., steps = w, device = device)
         w_seq = w_seq.unsqueeze(-1)
 
         h_seq = h_seq * scales * pi
