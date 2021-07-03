@@ -79,7 +79,7 @@ class Attention(nn.Module):
         q, k, v = self.to_qkv(x).chunk(3, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h = h), (q, k, v))
 
-        q *= self.scale
+        q = q * self.scale
 
         # splice out classification token at index 1
         (cls_q, q_), (cls_k, k_), (cls_v, v_) = map(lambda t: (t[:, :1], t[:, 1:]), (q, k, v))
