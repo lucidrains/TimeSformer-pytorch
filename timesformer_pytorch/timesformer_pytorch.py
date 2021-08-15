@@ -81,14 +81,14 @@ class Attention(nn.Module):
 
         q = q * self.scale
 
+        # rearrange across time or space
+        q, k, v = map(lambda t: rearrange(t, f'{einops_from} -> {einops_to}', **einops_dims), (q, k, v))
+
         # splice out classification token at index 1
         (cls_q, q_), (cls_k, k_), (cls_v, v_) = map(lambda t: (t[:, :1], t[:, 1:]), (q, k, v))
 
         # let classification token attend to key / values of all patches across time and space
         cls_out = attn(cls_q, k, v, mask = cls_mask)
-
-        # rearrange across time or space
-        q_, k_, v_ = map(lambda t: rearrange(t, f'{einops_from} -> {einops_to}', **einops_dims), (q_, k_, v_))
 
         # add rotary embeddings, if applicable
         if exists(rot_emb):
@@ -104,11 +104,11 @@ class Attention(nn.Module):
         # attention
         out = attn(q_, k_, v_, mask = mask)
 
-        # merge back time or space
-        out = rearrange(out, f'{einops_to} -> {einops_from}', **einops_dims)
-
         # concat back the cls token
         out = torch.cat((cls_out, out), dim = 1)
+
+        # merge back time or space
+        out = rearrange(out, f'{einops_to} -> {einops_from}', **einops_dims)
 
         # merge back the heads
         out = rearrange(out, '(b h) n d -> b n (h d)', h = h)
