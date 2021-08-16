@@ -22,6 +22,36 @@ class PreNorm(nn.Module):
         x = self.norm(x)
         return self.fn(x, *args, **kwargs)
 
+# time token shift
+
+def shift(t, amt):
+    if amt is 0:
+        return t
+    return F.pad(t, (0, 0, 0, 0, amt, -amt))
+
+class PreTokenShift(nn.Module):
+    def __init__(self, frames, fn):
+        super().__init__()
+        self.frames = frames
+        self.fn = fn
+
+    def forward(self, x, *args, **kwargs):
+        f, dim = self.frames, x.shape[-1]
+        cls_x, x = x[:, :1], x[:, 1:]
+        x = rearrange(x, 'b (f n) d -> b f n d', f = f)
+
+        # shift along time frame before and after
+
+        dim_chunk = (dim // 3)
+        chunks = x.split(dim_chunk, dim = -1)
+        chunks_to_shift, rest = chunks[:3], chunks[3:]
+        shifted_chunks = tuple(map(lambda args: shift(*args), zip(chunks_to_shift, (-1, 0, 1))))
+        x = torch.cat((*shifted_chunks, *rest), dim = -1)
+
+        x = rearrange(x, 'b f n d -> b (f n) d')
+        x = torch.cat((cls_x, x), dim = 1)
+        return self.fn(x, *args, **kwargs)
+
 # feedforward
 
 class GEGLU(nn.Module):
@@ -133,7 +163,8 @@ class TimeSformer(nn.Module):
         dim_head = 64,
         attn_dropout = 0.,
         ff_dropout = 0.,
-        rotary_emb = True
+        rotary_emb = True,
+        shift_tokens = True
     ):
         super().__init__()
         assert image_size % patch_size == 0, 'Image dimensions must be divisible by the patch size.'
@@ -157,11 +188,16 @@ class TimeSformer(nn.Module):
 
         self.layers = nn.ModuleList([])
         for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                PreNorm(dim, Attention(dim, dim_head = dim_head, heads = heads, dropout = attn_dropout)),
-                PreNorm(dim, Attention(dim, dim_head = dim_head, heads = heads, dropout = attn_dropout)),
-                PreNorm(dim, FeedForward(dim, dropout = ff_dropout))
-            ]))
+            ff = FeedForward(dim, dropout = ff_dropout)
+            time_attn = Attention(dim, dim_head = dim_head, heads = heads, dropout = attn_dropout)
+            spatial_attn = Attention(dim, dim_head = dim_head, heads = heads, dropout = attn_dropout)
+
+            if shift_tokens:
+                time_attn, spatial_attn, ff = map(lambda t: PreTokenShift(num_frames, t), (time_attn, spatial_attn, ff))
+
+            time_attn, spatial_attn, ff = map(lambda t: PreNorm(dim, t), (time_attn, spatial_attn, ff))
+
+            self.layers.append(nn.ModuleList([time_attn, spatial_attn, ff]))
 
         self.to_out = nn.Sequential(
             nn.LayerNorm(dim),

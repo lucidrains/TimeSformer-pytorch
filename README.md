@@ -60,3 +60,11 @@ pred = model(video, mask = mask) # (2, 10)
     primaryClass = {cs.CL}
 }
 ```
+
+```bibtex
+@article{tokshift2021,
+    title   = {Token Shift Transformer for Video Classification},
+    author  = {Hao Zhang, Yanbin Hao, Chong-Wah Ngo},
+    journal = {ACM Multimedia 2021},
+}
+```
