@@ -164,7 +164,7 @@ class TimeSformer(nn.Module):
         attn_dropout = 0.,
         ff_dropout = 0.,
         rotary_emb = True,
-        shift_tokens = True
+        shift_tokens = False
     ):
         super().__init__()
         assert image_size % patch_size == 0, 'Image dimensions must be divisible by the patch size.'
